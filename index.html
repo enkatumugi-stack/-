@@ -232,6 +232,27 @@
       </div>
     </div>
 
+    <!-- 一括置換パネル -->
+    <div id="bulkReplacePanel" style="background:var(--gold-pale); border:1px solid var(--gold); border-radius:var(--radius-lg); padding:14px 16px; margin-bottom:14px; display:none;">
+      <div style="font-size:13px; font-weight:500; color:var(--ink); margin-bottom:10px;">勘定科目 一括置換</div>
+      <div style="display:grid; grid-template-columns:1fr auto 1fr; gap:8px; align-items:center; margin-bottom:10px;">
+        <div>
+          <div class="form-label" style="margin-bottom:4px;">変更前</div>
+          <select id="bulkFrom" class="form-select" style="font-size:14px;"><option value="">— 選択 —</option></select>
+        </div>
+        <div style="font-size:18px; color:var(--ink-soft); padding-top:18px;">→</div>
+        <div>
+          <div class="form-label" style="margin-bottom:4px;">変更後</div>
+          <select id="bulkTo" class="form-select" style="font-size:14px;"><option value="">— 選択 —</option></select>
+        </div>
+      </div>
+      <div id="bulkReplaceAlert" style="display:none; margin-bottom:10px;"></div>
+      <div class="flex gap-8">
+        <button class="btn btn-primary btn-sm" onclick="execBulkReplace()">一括置換する</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleBulkReplace()">閉じる</button>
+      </div>
+    </div>
+
     <div class="flex justify-between items-center" style="margin-bottom:12px; flex-wrap:wrap; gap:8px;">
       <div class="flex gap-8 flex-wrap">
         <input type="month" id="jFilterMonth" class="form-input" style="max-width:150px; font-size:14px; padding:8px 10px;" oninput="renderJournal()">
@@ -239,8 +260,33 @@
           <option value="">すべての科目</option>
         </select>
         <button class="btn btn-secondary btn-sm" onclick="clearJournalFilter()">リセット</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleBulkReplace()">⇄ 一括置換</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleCardSettle()">💳 カード決済</button>
       </div>
       <div id="jCount" class="text-muted"></div>
+    </div>
+
+    <!-- カード決済一括登録パネル -->
+    <div id="cardSettlePanel" style="background:var(--sage-light); border:1px solid var(--sage); border-radius:var(--radius-lg); padding:14px 16px; margin-bottom:14px; display:none;">
+      <div style="font-size:13px; font-weight:500; color:var(--ink); margin-bottom:4px;">クレジットカード 引き落とし一括登録</div>
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">指定月の「未払費用」合計を普通預金から一括決済する仕訳を1本登録します。</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">
+        <div>
+          <div class="form-label" style="margin-bottom:4px;">未払費用が発生した月</div>
+          <input type="month" id="settleTargetMonth" class="form-input" style="font-size:14px;">
+        </div>
+        <div>
+          <div class="form-label" style="margin-bottom:4px;">引き落とし日</div>
+          <input type="date" id="settleDate" class="form-input" style="font-size:14px;">
+        </div>
+      </div>
+      <div id="settlePreview" style="background:var(--paper-light); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; font-size:13px; margin-bottom:10px; display:none;"></div>
+      <div id="settleAlert" style="display:none; margin-bottom:10px;"></div>
+      <div class="flex gap-8">
+        <button class="btn btn-secondary btn-sm" onclick="previewSettle()">金額を確認</button>
+        <button class="btn btn-primary btn-sm" id="settleExecBtn" onclick="execSettle()" style="display:none;">この内容で登録する</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleCardSettle()">閉じる</button>
+      </div>
     </div>
 
     <!-- スマホ用カード表示 -->
@@ -756,6 +802,129 @@ function clearJournalForm(resetAlert=true) {
   document.getElementById('jCreditAcc').value = '';
   document.getElementById('jCreditAmt').value = '';
   if(resetAlert) document.getElementById('journalAlert').style.display = 'none';
+}
+
+function toggleCardSettle() {
+  const panel = document.getElementById('cardSettlePanel');
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : '';
+  if(!isOpen) {
+    // 今月をデフォルト設定
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    document.getElementById('settleTargetMonth').value = ym;
+    document.getElementById('settleDate').value = today;
+    document.getElementById('settlePreview').style.display = 'none';
+    document.getElementById('settleExecBtn').style.display = 'none';
+    document.getElementById('settleAlert').style.display = 'none';
+  }
+}
+
+function previewSettle() {
+  const month = document.getElementById('settleTargetMonth').value;
+  const date  = document.getElementById('settleDate').value;
+  const alertEl = document.getElementById('settleAlert');
+  alertEl.style.display = 'none';
+
+  if(!month || !date) { showAlert(alertEl,'error','月と引き落とし日を入力してください。'); return; }
+
+  // 対象月の未払費用（貸方）の合計を計算
+  const targets = journals.filter(j => j.creditAcc === '未払費用' && j.date.startsWith(month));
+  if(targets.length === 0) {
+    showAlert(alertEl,'error',`${month} に「未払費用」（貸方）の仕訳が見つかりませんでした。`);
+    document.getElementById('settlePreview').style.display = 'none';
+    document.getElementById('settleExecBtn').style.display = 'none';
+    return;
+  }
+
+  const total = targets.reduce((s,j) => s + j.creditAmt, 0);
+  const preview = document.getElementById('settlePreview');
+  preview.innerHTML = `
+    <div style="margin-bottom:6px; color:var(--ink-soft); font-size:11px; text-transform:uppercase; letter-spacing:0.06em;">登録される仕訳</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:6px;">
+      <div style="background:rgba(74,120,152,0.07); padding:8px; border-radius:4px;">
+        <div style="font-size:10px; color:var(--blue-acc); font-weight:600; margin-bottom:2px;">借方</div>
+        <div style="font-size:13px;">未払費用</div>
+        <div style="font-size:14px; font-weight:500; color:var(--blue-acc);">¥${fmt(total)}</div>
+      </div>
+      <div style="background:rgba(192,80,64,0.05); padding:8px; border-radius:4px;">
+        <div style="font-size:10px; color:var(--red-acc); font-weight:600; margin-bottom:2px;">貸方</div>
+        <div style="font-size:13px;">普通預金</div>
+        <div style="font-size:14px; font-weight:500; color:var(--red-acc);">¥${fmt(total)}</div>
+      </div>
+    </div>
+    <div style="font-size:12px; color:var(--ink-soft);">日付：${fmtDate(date)}　摘要：${month}分 クレジットカード引き落とし　対象：${targets.length}件</div>
+  `;
+  preview.style.display = '';
+  document.getElementById('settleExecBtn').style.display = '';
+}
+
+function execSettle() {
+  const month = document.getElementById('settleTargetMonth').value;
+  const date  = document.getElementById('settleDate').value;
+  const alertEl = document.getElementById('settleAlert');
+
+  const targets = journals.filter(j => j.creditAcc === '未払費用' && j.date.startsWith(month));
+  const total = targets.reduce((s,j) => s + j.creditAmt, 0);
+
+  journals.push({
+    id: nextJournalId++,
+    date,
+    debitAcc: '未払費用',
+    debitAmt: total,
+    creditAcc: '普通預金',
+    creditAmt: total,
+    memo: `${month}分 クレジットカード引き落とし`
+  });
+  journals.sort((a,b) => a.date.localeCompare(b.date));
+  saveData();
+  renderJournal();
+  renderCashLedger();
+  showAlert(alertEl,'success',`¥${fmt(total)} の引き落とし仕訳を登録しました。`);
+  document.getElementById('settleExecBtn').style.display = 'none';
+  document.getElementById('settlePreview').style.display = 'none';
+}
+
+function toggleBulkReplace() {
+  const panel = document.getElementById('bulkReplacePanel');
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : '';
+  if(!isOpen) {
+    // セレクトに勘定科目を設定
+    const sorted = [...accounts].sort((a,b) => a.code.localeCompare(b.code));
+    const opts = ['<option value="">— 選択 —</option>'];
+    sorted.forEach(a => opts.push(`<option value="${a.name}">${a.name}</option>`));
+    const html = opts.join('');
+    document.getElementById('bulkFrom').innerHTML = html;
+    document.getElementById('bulkTo').innerHTML = html;
+    // デフォルトで前払費用→未払費用をセット
+    document.getElementById('bulkFrom').value = '前払費用';
+    document.getElementById('bulkTo').value = '未払費用';
+    document.getElementById('bulkReplaceAlert').style.display = 'none';
+  }
+}
+
+function execBulkReplace() {
+  const from = document.getElementById('bulkFrom').value;
+  const to   = document.getElementById('bulkTo').value;
+  const alertEl = document.getElementById('bulkReplaceAlert');
+
+  if(!from || !to) { showAlert(alertEl,'error','変更前と変更後の科目を選択してください。'); return; }
+  if(from === to)  { showAlert(alertEl,'error','変更前と変更後が同じ科目です。'); return; }
+
+  const count = journals.filter(j => j.debitAcc===from || j.creditAcc===from).length;
+  if(count === 0) { showAlert(alertEl,'error',`「${from}」が使われている仕訳が見つかりませんでした。`); return; }
+
+  if(!confirm(`「${from}」を「${to}」に一括置換します。\n対象：${count}件\n\nよろしいですか？`)) return;
+
+  journals.forEach(j => {
+    if(j.debitAcc  === from) j.debitAcc  = to;
+    if(j.creditAcc === from) j.creditAcc = to;
+  });
+  saveData();
+  renderJournal();
+  renderCashLedger();
+  showAlert(alertEl,'success',`${count}件の仕訳を「${from}」→「${to}」に置換しました。`);
 }
 
 function clearJournalFilter() {
